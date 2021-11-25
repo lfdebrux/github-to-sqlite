@@ -745,6 +745,119 @@ def scrape_dependents(repo, verbose=False):
             url = None
 
 
+def fetch_blob(url, token=None):
+    headers = make_headers(token)
+    headers["Accept"] = "application/vnd.github.v3+json"
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    blob = response.json()
+    if "content" in blob and blob["encoding"] == "base64":
+        blob["content"] = base64.b64decode(blob["content"]).decode("utf-8")
+        del blob["encoding"]
+    return blob
+
+
+def save_blob(db, blob):
+    db["blobs"].upsert(
+        {
+            "sha": blob["sha"],
+            "content": blob.get("content"),
+            "size": blob.get("size"),
+            "type": blob.get("type"),
+        },
+        pk=["sha"],
+    )
+    return blob["sha"]
+
+
+def fetch_repo_contents(repo, path, *, blob=None, token=None):
+    headers = make_headers(token)
+    headers["Accept"] = "application/vnd.github.v3+json"
+    if blob:
+        headers["If-None-Match"] = f'''W/"{blob['sha']}"'''
+
+    response = requests.get(
+        f"https://api.github.com/repos/{repo}/contents/{path}",
+        headers=headers
+    )
+    response.raise_for_status()
+
+    if response.status_code == 304:  # not modified
+        return blob
+
+    blob = response.json()
+    if "content" in blob and blob["encoding"] == "base64":
+        blob["content"] = base64.b64decode(blob["content"]).decode("utf-8")
+        del blob["encoding"]
+
+    return blob
+
+
+def save_repo_contents(db, repo_id, blob):
+    db["repo_contents"].upsert(
+        {
+            "repo": repo_id,
+            "path": blob["path"],
+            "blob": blob["sha"],
+            "html_url": blob["html_url"],
+            "name": blob["name"],
+        },
+        pk=("repo", "path"),
+        foreign_keys=[
+            ("repo", "repos", "id"),
+            ("blob", "blobs", "sha"),
+        ]
+    )
+
+
+class fetch_code_search_results:
+    def __init__(self, query, *, sort="newest", token=None, verbose=False):
+        headers = make_headers(token)
+        headers["Accept"] = "application/vnd.github.v3+json"
+        params = {
+            "q": query,
+            "per_page": 100,
+            "page": 1,
+            "sort": "indexed",
+            "order": "asc" if sort == "oldest" else "desc"
+        }
+        self.responses = paginate(
+            "https://api.github.com/search/code",
+            params=params, headers=headers, verbose=verbose
+        )
+        self._response = next(self.responses)
+        self._len = self._response["total_count"]
+
+    def __iter__(self):
+        yield from self._response["items"]
+
+        for response in self.responses:
+            self._response = response
+            yield from response["items"]
+
+    def __len__(self):
+        return self._len
+
+
+def save_code_search_result(db, query, result):
+    to_save = {
+        "query": query,
+        "repo": result["repository"]["id"],
+        "file_path": result["path"],
+        "file_sha": result["sha"],
+        "html_url": result["html_url"],
+    }
+    db["code_search_results"].insert(
+        to_save,
+        hash_id="id",
+        foreign_keys=[
+            ("repo", "repos", "id"),
+            ("file_sha", "blobs", "sha"),
+            # (("repo", "file_path"), "repo_contents", ("repo", "path"))
+        ],
+    )
+
+
 def fetch_emojis(token=None):
     headers = make_headers(token)
     response = requests.get("https://api.github.com/emojis", headers=headers)

@@ -410,6 +410,114 @@ def commits(db_path, repos, all, auth):
     utils.ensure_db_shape(db)
 
 
+@cli.command(name="scrape-code-search")
+@click.argument(
+    "db_path",
+    type=click.Path(file_okay=True, dir_okay=False, allow_dash=False),
+    required=True,
+)
+@click.argument("query", type=str, nargs=-1)
+@click.option(
+    "--all",
+    is_flag=True,
+    default=False,
+    help="Get all results (not just those that have not yet been saved)",
+)
+@click.option(
+    "--fetch-code/--no-fetch-code",
+    default=False,
+    help="Download and store contents of files found by search",
+)
+@click.option(
+    "--fetch-full-repos/--save-partial-repos",
+    default=True,
+    help="Fetch and save full details of repos found by search",
+)
+@click.option(
+    "--progress/--no-progress",
+    default=True,
+    help="Show progress bar",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Verbose output",
+)
+@click.option(
+    "-a",
+    "--auth",
+    type=click.Path(file_okay=True, dir_okay=False, allow_dash=True),
+    default="auth.json",
+    help="Path to auth.json token file",
+)
+def scrape_code_search(db_path, query, all, fetch_code, fetch_full_repos, progress, verbose, auth):
+    "Search code on GitHub and download all results"
+    db = sqlite_utils.Database(db_path)
+    token = load_token(auth)
+    query = " ".join(query)
+
+    results = utils.fetch_code_search_results(
+        query,
+        sort="oldest" if all else "newest",
+        token=token,
+        verbose=verbose
+    )
+
+    count = len(results)
+    if not all and db["code_search_results"].exists():
+        count = count - db["code_search_results"].count_where("query = ?", [query])
+
+    click.echo(f"{count}/{len(results)} results to download")
+
+    if count > 1000:
+        click.echo("Warning: GitHub will only serve the first 1000 results")
+
+    def process_results(query, results):
+        for result in results:
+            repo_full_name = result["repository"]["full_name"]
+            repo_id = int(result["repository"]["id"])
+
+            if fetch_full_repos:
+                full_repo = utils.fetch_repo(repo_full_name, token)
+                utils.save_repo(db, full_repo)
+            else:
+                # save_repo does an insert instead of an upsert, so to
+                # avoid clobbering useful data with NULLs we first check
+                # that there isn't an existing entry
+                if not (db["repos"].exists() and db["repos"].count_where("id = ?", [repo_id])):
+                    utils.save_repo(db, result["repository"])
+
+            if fetch_code:
+                blob = utils.fetch_blob(result["url"], token)
+            else:
+                blob = result
+
+            utils.save_blob(db, blob)
+            utils.save_repo_contents(db, repo_id, blob)
+
+            try:
+                utils.save_code_search_result(db, query, result)
+            except Exception as e:
+                if not str(e).startswith("UNIQUE constraint failed: code_search_results.id"):
+                    raise
+                if all:
+                    continue
+                break
+
+            time.sleep(0.1)  # GitHub limits us to 30 searches a minute
+
+    if progress:
+        with click.progressbar(results, length=count, label="Downloading results", show_pos=True) as results:
+            process_results(query, results)
+    else:
+        process_results(query, results)
+
+    click.echo('Done')
+
+    utils.ensure_db_shape(db)
+
+
 @cli.command(name="scrape-dependents")
 @click.argument(
     "db_path",
