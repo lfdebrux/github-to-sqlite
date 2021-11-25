@@ -306,7 +306,10 @@ def save_repo(db, repo):
         if (key == "html_url") or not key.endswith("url")
     }
     to_save["owner"] = save_user(db, to_save["owner"])
-    to_save["license"] = save_license(db, to_save["license"])
+    if "license" in to_save:
+        to_save["license"] = save_license(db, to_save["license"])
+    else:
+        to_save["license"] = None
     if "organization" in to_save:
         to_save["organization"] = save_user(db, to_save["organization"])
     else:
