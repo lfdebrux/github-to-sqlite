@@ -465,15 +465,20 @@ def fetch_user(username=None, token=None):
     return requests.get(url, headers=headers).json()
 
 
-def paginate(url, headers=None, params=None):
+def paginate(url, headers=None, params=None, verbose=False):
     while url:
         response = requests.get(url, headers=headers, params=params)
+        if verbose:
+            print(response.request.url)
         params = None
         # For HTTP 204 no-content this yields an empty list
         if response.status_code == 204:
             return
         data = response.json()
         if isinstance(data, dict) and data.get("message"):
+            if verbose:
+                print(response)
+                print(response.headers)
             raise GitHubError.from_response(response)
         try:
             url = response.links.get("next").get("url")
