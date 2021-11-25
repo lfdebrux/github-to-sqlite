@@ -465,9 +465,10 @@ def fetch_user(username=None, token=None):
     return requests.get(url, headers=headers).json()
 
 
-def paginate(url, headers=None):
+def paginate(url, headers=None, params=None):
     while url:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, params=params)
+        params = None
         # For HTTP 204 no-content this yields an empty list
         if response.status_code == 204:
             return
