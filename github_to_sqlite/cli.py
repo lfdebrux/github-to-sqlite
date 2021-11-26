@@ -464,16 +464,21 @@ def scrape_code_search(db_path, query, all, fetch_code, fetch_full_repos, progre
         verbose=verbose
     )
 
-    count = len(results)
+    total = len(results)
+    count = total
     if not all and db["code_search_results"].exists():
         count = count - db["code_search_results"].count_where("query = ?", [query])
 
-    click.echo(f"{count}/{len(results)} results to download")
+    if count == total:
+        click.echo(f"{count} results to download")
+    else:
+        click.echo(f"{count}/{len(results)} results to download")
 
-    if count > 1000:
+    if total > 1000:
         click.echo("Warning: GitHub will only serve the first 1000 results")
 
     def process_results(query, results):
+        count = 0
         for result in results:
             repo_full_name = result["repository"]["full_name"]
             repo_id = int(result["repository"]["id"])
@@ -498,21 +503,27 @@ def scrape_code_search(db_path, query, all, fetch_code, fetch_full_repos, progre
 
             try:
                 utils.save_code_search_result(db, query, result)
+                count += 1
             except Exception as e:
                 if not str(e).startswith("UNIQUE constraint failed: code_search_results.id"):
                     raise
+                if verbose:
+                    click.echo(f"found duplicate entry: {result['html_url']}")
                 if all:
                     continue
                 break
 
             time.sleep(0.1)  # GitHub limits us to 30 searches a minute
 
+        return count
+
     if progress:
         with click.progressbar(results, length=count, label="Downloading results", show_pos=True) as results:
-            process_results(query, results)
+            count = process_results(query, results)
     else:
-        process_results(query, results)
+        count = process_results(query, results)
 
+    click.echo(f"Added {count} results to database")
     click.echo('Done')
 
     utils.ensure_db_shape(db)
